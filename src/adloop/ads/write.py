@@ -2396,6 +2396,8 @@ def update_campaign(
     ad_schedule: list[dict] | None = None,
     end_date: str | None = None,
     start_date: str | None = None,
+    generated_videos: bool | None = None,
+    animated_images: bool | None = None,
 ) -> dict:
     """Draft an update to an existing campaign — returns preview, does NOT execute.
 
@@ -2409,6 +2411,10 @@ def update_campaign(
     geo_exclude_ids and ad_schedule REPLACE the campaign's exclusions and
     windows: None leaves them unchanged, [] clears them. The preview shows the
     current values, and apply refuses if those changed after the preview.
+    generated_videos / animated_images (Demand Gen only): True lets Google build
+    videos / animated images from the images and texts of every multi-asset ad
+    in the campaign, False stops it; None leaves it unchanged. Google keeps the
+    setting per ad (AdGroupAd), not per campaign.
     start_date (YYYY-MM-DD, the first day the campaign runs, today or later):
     None leaves it unchanged. Google refuses it once the campaign has started.
     end_date (YYYY-MM-DD, the last day the campaign runs): None leaves it
@@ -2545,6 +2551,8 @@ def update_campaign(
         ad_schedule is not None,
         end_date is not None,
         start_date is not None,
+        generated_videos is not None,
+        animated_images is not None,
     ])
     if not has_any_change:
         errors.append("No changes specified — provide at least one parameter to update")
@@ -2617,6 +2625,64 @@ def update_campaign(
                 for field in _URL_OPTION_FIELDS
             }
             url_example = _example_click_urls(current_urls["final_url"], effective)
+
+    media_changes: dict = {}
+    requested_media = {"generated_videos": generated_videos, "animated_images": animated_images}
+    if any(value is not None for value in requested_media.values()):
+        from adloop.ads.ai_max import merge_asset_automation
+        from adloop.ads.demand_gen import GENERATED_MEDIA
+        from adloop.ads.gaql import execute_query
+
+        channel = execute_query(config, customer_id, (
+            f"SELECT campaign.advertising_channel_type FROM campaign WHERE campaign.id = {campaign_id}"))
+        if not channel:
+            return {"error": f"Campaign {campaign_id} was not found in this account"}
+        if channel[0].get("campaign.advertising_channel_type") != "DEMAND_GEN":
+            return {"error": "generated_videos and animated_images apply to Demand Gen campaigns only"}
+        ads = execute_query(config, customer_id, (
+            "SELECT ad_group.id, ad_group_ad.ad.id, ad_group_ad.ad.name, "
+            "ad_group_ad.ad_group_ad_asset_automation_settings FROM ad_group_ad "
+            f"WHERE campaign.id = {campaign_id} AND ad_group_ad.status != 'REMOVED' "
+            "AND ad_group_ad.ad.type = 'DEMAND_GEN_MULTI_ASSET_AD'"))
+        if not ads:
+            return {"error": f"Campaign {campaign_id} has no multi-asset ads: nothing to switch"}
+        ad_updates = []
+        for row in ads:
+            current = [
+                {k: v for k, v in item.items() if k in ("asset_automation_type", "asset_automation_status")}
+                for item in row.get("ad_group_ad.ad_group_ad_asset_automation_settings") or []
+            ]
+            status = {item["asset_automation_type"]: item.get("asset_automation_status") for item in current}
+            updates, before = {}, {}
+            for name, wanted in requested_media.items():
+                if wanted is None:
+                    continue
+                # A type Google never reported is on: multi-asset ads are opted in by default.
+                now_on = status.get(GENERATED_MEDIA[name], "OPTED_IN") != "OPTED_OUT"
+                if bool(wanted) != now_on:
+                    updates[GENERATED_MEDIA[name]] = "OPTED_IN" if wanted else "OPTED_OUT"
+                    before[name] = now_on
+            if updates:
+                ad_updates.append({
+                    "ad_group_id": str(row["ad_group.id"]),
+                    "ad_id": str(row["ad_group_ad.ad.id"]),
+                    "ad_name": row.get("ad_group_ad.ad.name"),
+                    "current": before,
+                    "settings": merge_asset_automation(current, updates),
+                })
+        if ad_updates:
+            media_changes["generated_media_ads"] = ad_updates
+            media_changes.update({k: bool(v) for k, v in requested_media.items() if v is not None})
+            if any(v for v in requested_media.values()):
+                warnings.append(
+                    "Google will build videos and/or animated images from these ads' images and texts "
+                    "and serve them as extra ads, without a preview."
+                )
+            else:
+                warnings.append(
+                    "Stops new Google-generated media on these ads. Videos Google already generated "
+                    "stay as their own ads: pause them with pause_entity(entity_type='ad')."
+                )
 
     current_start_date = None
     if start_date is not None:
@@ -2792,6 +2858,7 @@ def update_campaign(
     if start_date is not None:
         changes["current_start_date"] = current_start_date
         changes["start_date"] = start_date
+    changes.update(media_changes)
 
     if keyword_match_type:
         changes["current_keyword_match_type"] = current_match["keyword_match_type"]
@@ -5475,6 +5542,17 @@ def _apply_update_campaign(client: object, cid: str, changes: dict) -> dict:
     keyword_match_type = changes.get("keyword_match_type")
     end_date = changes.get("end_date")
     start_date = changes.get("start_date")
+    for ad in changes.get("generated_media_ads") or []:
+        ad_op = client.get_type("MutateOperation")
+        ad_group_ad = ad_op.ad_group_ad_operation.update
+        ad_group_ad.resource_name = service.ad_group_ad_path(cid, ad["ad_group_id"], ad["ad_id"])
+        # The complete merged list: the mask replaces it (see ai_max.merge_asset_automation).
+        for item in ad["settings"]:
+            ad_group_ad.ad_group_ad_asset_automation_settings.append(
+                {k: v for k, v in item.items() if v is not None}
+            )
+        ad_op.ad_group_ad_operation.update_mask.paths.append("ad_group_ad_asset_automation_settings")
+        operations.append(ad_op)
     if (
         end_date is not None
         or start_date

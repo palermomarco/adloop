@@ -4067,6 +4067,8 @@ def draft_demand_gen_ad(
     portrait_image_asset_ids: _StrList = [],  # noqa: B006
     call_to_action: str = "",
     ad_name: str = "",
+    generated_videos: bool = False,
+    animated_images: bool = False,
     customer_id: str = "",
 ) -> dict:
     """Draft a Demand Gen multi-asset image ad in a Demand Gen ad group — returns a PREVIEW.
@@ -4093,6 +4095,10 @@ def draft_demand_gen_ad(
         call_to_action: Optional button text in the ad's language, e.g.
             "Scopri di più". Empty lets Google choose.
         ad_name: Optional name of the ad in Google Ads.
+        generated_videos: Let Google build videos from this ad's images and
+            texts and serve them as extra ads. Off by default (Google's own
+            default is on).
+        animated_images: Same for animated images. Off by default.
         customer_id: Google Ads customer ID (digits, dashes optional).
             Defaults to the configured account.
     """
@@ -4112,6 +4118,8 @@ def draft_demand_gen_ad(
         logo_asset_ids=logo_asset_ids,
         call_to_action=call_to_action,
         ad_name=ad_name,
+        generated_videos=generated_videos,
+        animated_images=animated_images,
     )
 
 
@@ -4345,6 +4353,8 @@ def update_campaign(
     ad_schedule: _DictListOpt = None,
     end_date: str | None = None,
     start_date: str | None = None,
+    generated_videos: bool | None = None,
+    animated_images: bool | None = None,
 ) -> dict:
     """Draft an update to an existing campaign — returns a PREVIEW, does NOT apply.
 
@@ -4443,6 +4453,12 @@ def update_campaign(
             time zone: today or later, e.g. to bring a scheduled start forward
             to today. Omitted leaves it unchanged; it cannot be removed, and
             Google refuses a change once the campaign has started serving.
+        generated_videos: Demand Gen only. false stops Google from building
+            videos out of the images and texts of every multi-asset ad in the
+            campaign (on by default in Google Ads), true allows it again;
+            omitted leaves it unchanged. Videos Google already generated stay
+            as their own ads: pause them with pause_entity.
+        animated_images: Demand Gen only. Same for animated images.
     """
     from adloop.ads.write import update_campaign as _impl
 
@@ -4470,6 +4486,8 @@ def update_campaign(
         ad_schedule=ad_schedule,
         end_date=end_date,
         start_date=start_date,
+        generated_videos=generated_videos,
+        animated_images=animated_images,
     )
 
 

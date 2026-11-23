@@ -253,3 +253,28 @@ def test_ad_mutate_builds_a_paused_multi_asset_ad():
     assert [i.asset for i in info.square_marketing_images] == ["customers/1234567890/assets/12"]
     assert [i.asset for i in info.portrait_marketing_images] == ["customers/1234567890/assets/13"]
     assert [i.asset for i in info.logo_images] == ["customers/1234567890/assets/14"]
+
+
+
+class TestGeneratedMedia:
+    def test_ad_draft_defaults_to_off(self, tmp_path):
+        changes = _ad(tmp_path)["changes"]
+        assert (changes["generated_videos"], changes["animated_images"]) == (False, False)
+
+    def test_ad_create_opts_out_unless_asked(self):
+        client = _FakeClient()
+        demand_gen.apply_create_demand_gen_ad(client, "1", {
+            "ad_group_id": "555", "final_url": "https://example.com/", "headlines": ["H"], "descriptions": ["D"],
+            "business_name": "Example Co", "square_image_asset_ids": ["12"], "logo_asset_ids": ["14"],
+            "generated_videos": False, "animated_images": True,
+        })
+        ad_group_ad = client.sent[0].ad_group_ad_operation.create
+        settings = {
+            client.enums.AssetAutomationTypeEnum(s.asset_automation_type).name:
+                client.enums.AssetAutomationStatusEnum(s.asset_automation_status).name
+            for s in ad_group_ad.ad_group_ad_asset_automation_settings
+        }
+        assert settings == {
+            "GENERATE_VIDEOS_FROM_OTHER_ASSETS": "OPTED_OUT",
+            "GENERATE_ANIMATED_IMAGES_FROM_OTHER_ASSETS": "OPTED_IN",
+        }

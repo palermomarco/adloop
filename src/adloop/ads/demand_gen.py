@@ -29,6 +29,14 @@ DEMAND_GEN_CHANNELS = (
 
 _BUDGET, _CAMPAIGN, _AD_GROUP = "-1", "-2", "-3"
 
+# Parameter -> AdGroupAd.ad_group_ad_asset_automation_settings type. Google opts
+# multi-asset ads into both by default and builds extra ads from their images
+# and texts. Demand Gen refuses these on the campaign (VALUE_MUST_BE_UNSET).
+GENERATED_MEDIA = {
+    "generated_videos": "GENERATE_VIDEOS_FROM_OTHER_ASSETS",
+    "animated_images": "GENERATE_ANIMATED_IMAGES_FROM_OTHER_ASSETS",
+}
+
 # Google's Demand Gen image ad limits (Help Center "Demand Gen asset specs").
 _MAX_HEADLINE, _MAX_DESCRIPTION, _MAX_BUSINESS_NAME = 40, 90, 25
 _MAX_TEXTS, _MAX_LOGOS, _MAX_MARKETING_IMAGES = 5, 5, 20
@@ -306,6 +314,8 @@ def draft_demand_gen_ad(
     logo_asset_ids: list[str] | None = None,
     call_to_action: str = "",
     ad_name: str = "",
+    generated_videos: bool = False,
+    animated_images: bool = False,
 ) -> dict:
     """Draft a Demand Gen multi-asset image ad (created PAUSED) — returns a preview."""
     from adloop.ads.write import _counted_length, _validate_urls
@@ -399,6 +409,8 @@ def draft_demand_gen_ad(
             "business_name": business_name,
             **images,
             "call_to_action": (call_to_action or "").strip() or None,
+            "generated_videos": bool(generated_videos),
+            "animated_images": bool(animated_images),
             "status_on_create": "PAUSED",
         },
     )
@@ -416,6 +428,13 @@ def apply_create_demand_gen_ad(client: object, cid: str, changes: dict) -> dict:
     ad_group_ad = op.ad_group_ad_operation.create
     ad_group_ad.ad_group = service.ad_group_path(cid, changes["ad_group_id"])
     ad_group_ad.status = client.enums.AdGroupAdStatusEnum.PAUSED
+    for name, asset_type in GENERATED_MEDIA.items():
+        # Plans drafted before these options existed keep Google's default.
+        if name in changes:
+            ad_group_ad.ad_group_ad_asset_automation_settings.append({
+                "asset_automation_type": asset_type,
+                "asset_automation_status": "OPTED_IN" if changes[name] else "OPTED_OUT",
+            })
     ad = ad_group_ad.ad
     if changes.get("ad_name"):
         ad.name = changes["ad_name"]
