@@ -2150,6 +2150,10 @@ def draft_campaign(
     url_custom_parameters: list[dict] | None = None,
     geo_exclude_ids: list[str] | None = None,
     ad_schedule: list[dict] | None = None,
+    start_date: str = "",
+    end_date: str = "",
+    channels: list[str] | None = None,
+    optimized_targeting: bool = False,
 ) -> dict:
     """Draft a full campaign structure — returns preview, does NOT execute.
 
@@ -2173,6 +2177,26 @@ def draft_campaign(
         double confirmation: the campaign is created PAUSED, so nothing stops
         serving.
     """
+    if channel_type.upper() == "DEMAND_GEN":
+        # A different structure (targeting on the ad group, no keywords).
+        from adloop.ads.demand_gen import draft_demand_gen_campaign
+
+        return draft_demand_gen_campaign(
+            config,
+            customer_id=customer_id,
+            campaign_name=campaign_name,
+            daily_budget=daily_budget,
+            bidding_strategy=bidding_strategy,
+            target_cpa=target_cpa,
+            max_cpc=max_cpc,
+            start_date=start_date,
+            end_date=end_date,
+            ad_group_name=ad_group_name,
+            geo_target_ids=geo_target_ids,
+            language_ids=language_ids,
+            channels=channels,
+            optimized_targeting=optimized_targeting,
+        )
     from adloop.ads.assets import _account_settings, _time_zone_note, _validate_schedule
     from adloop.safety.guards import (
         SafetyViolation,
@@ -2370,6 +2394,7 @@ def update_campaign(
     keyword_match_type: str = "",
     geo_exclude_ids: list[str] | None = None,
     ad_schedule: list[dict] | None = None,
+    end_date: str | None = None,
 ) -> dict:
     """Draft an update to an existing campaign — returns preview, does NOT execute.
 
@@ -2383,6 +2408,8 @@ def update_campaign(
     geo_exclude_ids and ad_schedule REPLACE the campaign's exclusions and
     windows: None leaves them unchanged, [] clears them. The preview shows the
     current values, and apply refuses if those changed after the preview.
+    end_date (YYYY-MM-DD, the last day the campaign runs): None leaves it
+    unchanged, "" removes it so the campaign runs indefinitely.
     """
     from adloop.safety.guards import (
         SafetyViolation,
@@ -2462,6 +2489,16 @@ def update_campaign(
 
         ad_schedule, schedule_errors = _validate_schedule(ad_schedule)
         errors.extend(schedule_errors)
+    if end_date is not None:
+        from datetime import UTC, datetime
+
+        from adloop.ads.assets import _iso_date
+
+        end_date = str(end_date).strip()
+        if end_date and not _iso_date(end_date):
+            errors.append(f"end_date '{end_date}' must be a date YYYY-MM-DD")
+        elif end_date and end_date < datetime.now(UTC).date().isoformat():
+            errors.append(f"end_date {end_date} is in the past")
     if max_cpc:
         strategy_for_cap = bs or _campaign_bidding_strategy(config, customer_id, campaign_id)
         if strategy_for_cap is None:
@@ -2491,6 +2528,7 @@ def update_campaign(
         keyword_match_type,
         geo_exclude_ids is not None,
         ad_schedule is not None,
+        end_date is not None,
     ])
     if not has_any_change:
         errors.append("No changes specified — provide at least one parameter to update")
@@ -2563,6 +2601,24 @@ def update_campaign(
                 for field in _URL_OPTION_FIELDS
             }
             url_example = _example_click_urls(current_urls["final_url"], effective)
+
+    current_end_date = None
+    if end_date is not None:
+        current_end_date = _current_end_date(config, customer_id, campaign_id)
+        if current_end_date is None:
+            return {"error": f"Campaign {campaign_id} was not found in this account"}
+        if end_date == current_end_date:
+            end_date = None  # already so: nothing to change for this field
+        elif end_date:
+            warnings.append(
+                f"The campaign stops serving after {end_date} (end of that day in the "
+                "account time zone)."
+            )
+        else:
+            warnings.append(
+                f"Removes the end date (currently {current_end_date}): the campaign "
+                "runs indefinitely once enabled."
+            )
 
     current_match: dict = {}
     broad_on = False
@@ -2695,6 +2751,9 @@ def update_campaign(
         if field in url_options:
             changes[f"current_{field}"] = current_urls[field]
             changes[field] = url_options[field]
+    if end_date is not None:
+        changes["current_end_date"] = current_end_date
+        changes["end_date"] = end_date
 
     if keyword_match_type:
         changes["current_keyword_match_type"] = current_match["keyword_match_type"]
@@ -4088,7 +4147,7 @@ _VALID_BIDDING_STRATEGIES = {
     "MANUAL_CPC",
 }
 
-_VALID_CHANNEL_TYPES = {"SEARCH", "DISPLAY", "SHOPPING", "VIDEO", "PERFORMANCE_MAX"}
+_VALID_CHANNEL_TYPES = {"SEARCH", "DISPLAY", "SHOPPING", "VIDEO", "PERFORMANCE_MAX", "DEMAND_GEN"}
 
 # campaign.geo_target_type_setting. Google's default for a new campaign is
 # PRESENCE_OR_INTEREST, which also reaches people elsewhere who show interest
@@ -4151,6 +4210,21 @@ def _current_location_options(
         "negative_location_option": rows[0].get(
             "campaign.geo_target_type_setting.negative_geo_target_type") or "",
     }
+
+
+def _current_end_date(config: AdLoopConfig, customer_id: str, campaign_id: str) -> str | None:
+    """The campaign's last day (YYYY-MM-DD, "" when it runs indefinitely); None
+    when it does not exist."""
+    from adloop.ads.gaql import execute_query
+
+    rows = execute_query(config, customer_id, (
+        f"SELECT campaign.end_date_time FROM campaign WHERE campaign.id = {campaign_id}"))
+    if not rows:
+        return None
+    # API v23+ returns "yyyy-MM-dd HH:mm:ss" in the account time zone.
+    return str(rows[0].get("campaign.end_date_time") or "")[:10]
+
+
 # Campaign URL options. Validation is deliberately light: the template must
 # insert the landing page somewhere, and custom parameters must fit Google's
 # lengths. The validate_only dry run catches anything else Google rejects.
@@ -4911,6 +4985,13 @@ def _dispatch_ads_plan(client: object, cid: str, plan: object) -> dict:
     )
     from adloop.ads.audiences import apply_audience_criteria as _apply_audience_criteria
     from adloop.ads.shopping import apply_create_shopping_campaign as _apply_create_shopping_campaign
+    from adloop.ads.demand_gen import apply_create_demand_gen_ad, apply_create_demand_gen_campaign
+    from adloop.ads.image_library import apply_create_library_image_assets
+    from adloop.ads.audience_create import (
+        apply_create_audience,
+        apply_create_custom_segment,
+        apply_create_lookalike_list,
+    )
     from adloop.ads.pmax import apply_asset_group_assets as _apply_asset_group_assets
     from adloop.ads.pmax import apply_asset_group_signals as _apply_asset_group_signals
     from adloop.ads.pmax import apply_pmax_product_filter as _apply_pmax_product_filter
@@ -4929,6 +5010,12 @@ def _dispatch_ads_plan(client: object, cid: str, plan: object) -> dict:
     dispatch = {
         "create_campaign": _apply_create_campaign,
         "create_shopping_campaign": _apply_create_shopping_campaign,
+        "create_demand_gen_campaign": apply_create_demand_gen_campaign,
+        "create_demand_gen_ad": apply_create_demand_gen_ad,
+        "create_library_image_assets": apply_create_library_image_assets,
+        "create_custom_segment": apply_create_custom_segment,
+        "create_lookalike_list": apply_create_lookalike_list,
+        "create_audience": apply_create_audience,
         "update_asset_group_assets": _apply_asset_group_assets,
         "update_asset_group_signals": _apply_asset_group_signals,
         "update_pmax_product_filter": _apply_pmax_product_filter,
@@ -5348,8 +5435,10 @@ def _apply_update_campaign(client: object, cid: str, changes: dict) -> dict:
     negative_location_option = changes.get("negative_location_option")
     url_fields = [field for field in _URL_OPTION_FIELDS if field in changes]
     keyword_match_type = changes.get("keyword_match_type")
+    end_date = changes.get("end_date")
     if (
-        bs
+        end_date is not None
+        or bs
         or search_partners_enabled is not None
         or display_network_enabled is not None
         or changes.get("max_cpc")
@@ -5427,6 +5516,12 @@ def _apply_update_campaign(client: object, cid: str, changes: dict) -> dict:
                 client.enums.CampaignKeywordMatchTypeEnum, keyword_match_type
             )
             field_paths.append("keyword_match_type")
+        if end_date is not None:
+            # "" leaves the field unset; under the mask that clears it, so the
+            # campaign runs indefinitely. 23:59:59 is Google's daily granularity.
+            if end_date:
+                campaign.end_date_time = f"{end_date} 23:59:59"
+            field_paths.append("end_date_time")
 
         if field_paths:
             campaign_op.campaign_operation.update_mask.CopyFrom(

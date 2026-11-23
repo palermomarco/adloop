@@ -3910,6 +3910,10 @@ def draft_campaign(
     url_custom_parameters: _DictListOpt = None,
     geo_exclude_ids: _StrListOpt = None,
     ad_schedule: _DictListOpt = None,
+    start_date: str = "",
+    end_date: str = "",
+    channels: _StrListOpt = None,
+    optimized_targeting: bool = False,
 ) -> dict:
     """Draft a full campaign structure — returns a PREVIEW, does NOT create anything.
 
@@ -3917,10 +3921,19 @@ def draft_campaign(
     + geo targeting + language targeting + optional geo exclusions and ad
     schedule, all in one atomic request.
     Ads are NOT included — draft_responsive_search_ad adds them once the
-    campaign exists. Only SEARCH campaigns can be created: Performance Max
-    needs an asset group with all its assets in one request, and DISPLAY,
-    SHOPPING and VIDEO need channel-specific settings and ad group types, so
-    the draft refuses them.
+    campaign exists. SEARCH and DEMAND_GEN campaigns can be created:
+    Performance Max needs an asset group with all its assets in one request,
+    and DISPLAY, SHOPPING and VIDEO need channel-specific settings and ad
+    group types, so the draft refuses them.
+
+    channel_type="DEMAND_GEN" creates budget + campaign (PAUSED) + one Demand
+    Gen ad group with the locations and languages on the ad group (where
+    Demand Gen targets). It takes campaign_name, daily_budget,
+    bidding_strategy (TARGET_SPEND = Maximize clicks, MAXIMIZE_CONVERSIONS or
+    TARGET_CPA), target_cpa, max_cpc, ad_group_name, geo_target_ids,
+    language_ids, start_date, end_date, channels and optimized_targeting; the
+    other arguments are ignored. Next: draft_audience for the ad group's
+    audience, draft_library_image_assets and draft_demand_gen_ad for the ad.
 
     Returns a preview with a plan_id plus any warnings (e.g. a daily budget
     below 5x target CPA, MANUAL_CPC); nothing changes until confirm_and_apply
@@ -3991,6 +4004,16 @@ def draft_campaign(
             zone. No overlaps, at most six a day. Once the campaign is enabled it
             serves only inside them; the preview warns about that. No double
             confirmation, since the campaign is created PAUSED.
+        start_date: DEMAND_GEN only. First day the campaign runs, YYYY-MM-DD
+            in the account time zone. Empty starts when it is enabled.
+        end_date: DEMAND_GEN only. Last day the campaign runs, YYYY-MM-DD.
+            Empty runs indefinitely.
+        channels: DEMAND_GEN only. Where the ad group serves, any of
+            youtube_in_stream, youtube_in_feed, youtube_shorts, discover,
+            gmail, display, maps. Empty serves on all of them, including the
+            Display Network (the preview warns).
+        optimized_targeting: DEMAND_GEN only. Let Google reach people outside
+            the ad group's audience. Off by default.
     """
     from adloop.ads.write import draft_campaign as _impl
 
@@ -4018,6 +4041,233 @@ def draft_campaign(
         url_custom_parameters=url_custom_parameters,
         geo_exclude_ids=geo_exclude_ids,
         ad_schedule=ad_schedule,
+        start_date=start_date,
+        end_date=end_date,
+        channels=channels,
+        optimized_targeting=optimized_targeting,
+    )
+
+
+@_tool(title="Draft a Demand Gen image ad", annotations=_WRITE, tags={"ads"})
+@_safe
+def draft_demand_gen_ad(
+    ad_group_id: str,
+    final_url: str,
+    headlines: _StrList,
+    descriptions: _StrList,
+    business_name: str,
+    logo_asset_ids: _StrList,
+    marketing_image_asset_ids: _StrList = [],  # noqa: B006
+    square_image_asset_ids: _StrList = [],  # noqa: B006
+    portrait_image_asset_ids: _StrList = [],  # noqa: B006
+    call_to_action: str = "",
+    ad_name: str = "",
+    customer_id: str = "",
+) -> dict:
+    """Draft a Demand Gen multi-asset image ad in a Demand Gen ad group — returns a PREVIEW.
+
+    The images and logos must already be in the asset library: upload them
+    with draft_library_image_assets and pass the asset ids it returns. The
+    draft checks every text length, that each asset is an image of this
+    account with the ratio its slot needs, and that final_url is reachable.
+    The ad is created PAUSED. Nothing changes until confirm_and_apply applies
+    the plan_id; a dry run has Google validate it.
+
+    Args:
+        ad_group_id: Numeric id of the Demand Gen ad group.
+        final_url: Landing page. Must be a real, reachable page.
+        headlines: 1 to 5 headlines, at most 40 characters each.
+        descriptions: 1 to 5 descriptions, at most 90 characters each.
+        business_name: Advertiser name shown with the ad, at most 25 characters.
+        logo_asset_ids: 1 to 5 square (1:1) logo image asset ids.
+        marketing_image_asset_ids: Landscape (1.91:1) image asset ids.
+        square_image_asset_ids: Square (1:1) image asset ids. At least one
+            landscape or square image is required.
+        portrait_image_asset_ids: Portrait (4:5) image asset ids. At most 20
+            landscape, square and portrait images in total.
+        call_to_action: Optional button text in the ad's language, e.g.
+            "Scopri di più". Empty lets Google choose.
+        ad_name: Optional name of the ad in Google Ads.
+        customer_id: Google Ads customer ID (digits, dashes optional).
+            Defaults to the configured account.
+    """
+    from adloop.ads.demand_gen import draft_demand_gen_ad as _impl
+
+    return _impl(
+        current_config(),
+        customer_id=customer_id or current_config().ads.customer_id,
+        ad_group_id=ad_group_id,
+        final_url=final_url,
+        headlines=headlines,
+        descriptions=descriptions,
+        business_name=business_name,
+        marketing_image_asset_ids=marketing_image_asset_ids,
+        square_image_asset_ids=square_image_asset_ids,
+        portrait_image_asset_ids=portrait_image_asset_ids,
+        logo_asset_ids=logo_asset_ids,
+        call_to_action=call_to_action,
+        ad_name=ad_name,
+    )
+
+
+@_tool(title="Draft library image assets", annotations=_WRITE, tags={"ads"})
+@_safe
+def draft_library_image_assets(
+    image_paths: _StrList = [],  # noqa: B006
+    image_urls: _StrList = [],  # noqa: B006
+    upload_ids: _StrList = [],  # noqa: B006
+    customer_id: str = "",
+) -> dict:
+    """Draft uploading images and logos to the asset library, linked to nothing — returns a PREVIEW.
+
+    Unlike draft_image_assets, the images are not attached to a campaign or
+    the account: they only become assets whose ids an ad can use, e.g.
+    draft_demand_gen_ad. The preview gives each image's size and ratio class
+    (landscape 1.91:1, square 1:1, portrait 4:5, tall_portrait 9:16, other)
+    and warns about ratios or sizes Demand Gen does not accept. The applied
+    result lists each asset's resource_name and asset_id. A dry run has
+    Google validate the upload and returns placeholder ids only.
+
+    Args:
+        image_paths: Local PNG/JPEG/GIF files (not on a hosted server).
+        image_urls: Public http(s) image links.
+        upload_ids: Upload ids (up_...) from upload_images / list_uploads.
+        customer_id: Google Ads customer ID (digits, dashes optional).
+            Defaults to the configured account.
+    """
+    from adloop.ads.image_library import draft_library_image_assets as _impl
+
+    return _impl(
+        current_config(),
+        customer_id=customer_id or current_config().ads.customer_id,
+        image_paths=image_paths,
+        image_urls=image_urls,
+        upload_ids=upload_ids,
+    )
+
+
+@_tool(title="Draft a custom segment", annotations=_WRITE, tags={"ads"})
+@_safe
+def draft_custom_segment(
+    name: str,
+    urls: _StrList = [],  # noqa: B006
+    keywords: _StrList = [],  # noqa: B006
+    segment_type: str = "AUTO",
+    description: str = "",
+    customer_id: str = "",
+) -> dict:
+    """Draft a custom segment from URLs and search terms — returns a PREVIEW.
+
+    A custom segment reaches people who browse sites like the URLs or who
+    search for / are interested in the terms (any of them: members are
+    OR-ed). Custom segments cannot be attached to Search campaigns; in
+    Demand Gen they are used inside an audience (draft_audience). The applied
+    result returns custom_audience_id for draft_audience.
+
+    Args:
+        name: Segment name, unique in the account.
+        urls: Websites the audience browses, e.g. competitor sites.
+        keywords: Terms the audience searches for or is interested in (at
+            most 10 words and 80 characters each).
+        segment_type: AUTO (default; Google decides between interest and
+            search intent) or SEARCH (people who searched the terms on Google).
+        description: Optional description.
+        customer_id: Google Ads customer ID (digits, dashes optional).
+            Defaults to the configured account.
+    """
+    from adloop.ads.audience_create import draft_custom_segment as _impl
+
+    return _impl(
+        current_config(),
+        customer_id=customer_id or current_config().ads.customer_id,
+        name=name,
+        urls=urls,
+        keywords=keywords,
+        segment_type=segment_type,
+        description=description,
+    )
+
+
+@_tool(title="Draft a lookalike list", annotations=_WRITE, tags={"ads"})
+@_safe
+def draft_lookalike_list(
+    name: str,
+    seed_user_list_ids: _StrList,
+    expansion_level: str = "BALANCED",
+    country_codes: _StrList = [],  # noqa: B006
+    description: str = "",
+    customer_id: str = "",
+) -> dict:
+    """Draft a lookalike segment built from seed user lists — returns a PREVIEW.
+
+    Google finds people similar to the members of the seed lists (from
+    get_audience_lists). Lookalikes only work in Demand Gen, cannot be edited
+    after creation, and stay ineligible while the seeds together have fewer
+    than 100 matched people. The applied result returns user_list_id for
+    draft_audience.
+
+    Args:
+        name: List name, unique in the account.
+        seed_user_list_ids: Numeric ids of the "your data" lists to learn from.
+        expansion_level: NARROW (most similar, smallest reach), BALANCED
+            (default) or BROAD.
+        country_codes: Two-letter country codes where to look for similar
+            people, e.g. ["IT"].
+        description: Optional description.
+        customer_id: Google Ads customer ID (digits, dashes optional).
+            Defaults to the configured account.
+    """
+    from adloop.ads.audience_create import draft_lookalike_list as _impl
+
+    return _impl(
+        current_config(),
+        customer_id=customer_id or current_config().ads.customer_id,
+        name=name,
+        seed_user_list_ids=seed_user_list_ids,
+        expansion_level=expansion_level,
+        country_codes=country_codes,
+        description=description,
+    )
+
+
+@_tool(title="Draft an audience", annotations=_WRITE, tags={"ads"})
+@_safe
+def draft_audience(
+    name: str,
+    custom_audience_ids: _StrList = [],  # noqa: B006
+    user_list_ids: _StrList = [],  # noqa: B006
+    ad_group_id: str = "",
+    description: str = "",
+    customer_id: str = "",
+) -> dict:
+    """Draft a reusable audience from custom segments and user lists — returns a PREVIEW.
+
+    Combines custom segments (draft_custom_segment) and "your data" lists,
+    lookalikes included (get_audience_lists, draft_lookalike_list): a person
+    in ANY of them is in the audience. With ad_group_id the audience is also
+    attached to that Demand Gen ad group in the same request, which limits
+    the ad group to these people. For Search campaigns use
+    draft_audience_attachment instead.
+
+    Args:
+        name: Audience name, unique in the account.
+        custom_audience_ids: Custom segment ids.
+        user_list_ids: User list ids (remarketing, customer and lookalike lists).
+        ad_group_id: Optional Demand Gen ad group to attach the audience to.
+        description: Optional description.
+        customer_id: Google Ads customer ID (digits, dashes optional).
+            Defaults to the configured account.
+    """
+    from adloop.ads.audience_create import draft_audience as _impl
+
+    return _impl(
+        current_config(),
+        customer_id=customer_id or current_config().ads.customer_id,
+        name=name,
+        custom_audience_ids=custom_audience_ids,
+        user_list_ids=user_list_ids,
+        ad_group_id=ad_group_id,
+        description=description,
     )
 
 
@@ -4088,6 +4338,7 @@ def update_campaign(
     keyword_match_type: str = "",
     geo_exclude_ids: _StrListOpt = None,
     ad_schedule: _DictListOpt = None,
+    end_date: str | None = None,
 ) -> dict:
     """Draft an update to an existing campaign — returns a PREVIEW, does NOT apply.
 
@@ -4178,6 +4429,10 @@ def update_campaign(
             need a double confirmation. Only windows that differ are removed or
             added, removals first. Apply refuses if the exclusions or windows
             changed after the preview.
+        end_date: Last day the campaign runs, YYYY-MM-DD (it serves until the
+            end of that day in the account time zone); must not be in the past.
+            Omitted leaves it unchanged; "" removes it, so the campaign runs
+            indefinitely. The preview shows the current one (current_end_date).
     """
     from adloop.ads.write import update_campaign as _impl
 
@@ -4203,6 +4458,7 @@ def update_campaign(
         keyword_match_type=keyword_match_type,
         geo_exclude_ids=geo_exclude_ids,
         ad_schedule=ad_schedule,
+        end_date=end_date,
     )
 
 
