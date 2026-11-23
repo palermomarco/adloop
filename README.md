@@ -1,5 +1,45 @@
 <!-- mcp-name: com.getadloop/adloop -->
 
+> [!NOTE]
+> **This is a fork of [kLOsk/adloop](https://github.com/kLOsk/adloop).** Our MCP server runs from the
+> **`demand-gen`** branch of this repository, installed in development mode, instead of the PyPI package.
+>
+> **Why.** We manage Google Ads Demand Gen campaigns, which upstream AdLoop cannot create yet, and two
+> bugs blocked our daily use. Running a branch of our own lets us ship those fixes now and still take
+> every upstream release: upstream stays the `upstream` remote, our work sits on top of it.
+>
+> **What this branch adds**
+> - **Demand Gen campaigns:** `draft_campaign(channel_type="DEMAND_GEN")` creates budget, campaign (PAUSED)
+>   and ad group, with locations and languages on the ad group, channel controls, start and end date,
+>   optimized targeting off by default; Maximize clicks, Maximize conversions or Target CPA.
+> - **Demand Gen image ads:** `draft_demand_gen_ad` builds a multi-asset ad (PAUSED) from library images,
+>   with the text length and image ratio checks Google applies.
+> - **Asset library uploads:** `draft_library_image_assets` uploads images and logos without linking them
+>   to a campaign and returns their asset ids.
+> - **Audiences:** `draft_custom_segment` (URLs and search terms), `draft_lookalike_list` (from seed user
+>   lists) and `draft_audience` (combines segments and lists, optionally attached to a Demand Gen ad group).
+> - **Campaign dates:** `update_campaign` takes `end_date` (set or remove) and `start_date` (e.g. bring a
+>   scheduled start forward to today).
+> - **Fix:** approval and upload cards no longer fail with "Couldn't load this widget" when
+>   `ADLOOP_TOOLSETS` is set (the toolset filter switched their `ui://` resources off).
+>
+> Every new tool follows AdLoop's draft → preview → `confirm_and_apply` flow, and every change was
+> validated against a real account with `validate_only` dry runs.
+>
+> **Install** (replaces the PyPI package for the Python the MCP client launches):
+> ```bash
+> pip install -e /path/to/adloop
+> ```
+>
+> **Taking upstream updates**
+> ```bash
+> git fetch upstream
+> git checkout demand-gen
+> git merge upstream/main     # resolve conflicts, then: uv run pytest
+> git push origin demand-gen
+> ```
+> Changes we send back upstream as pull requests drop out of this list once they are merged.
+
 <div align="center">
 
 # AdLoop
