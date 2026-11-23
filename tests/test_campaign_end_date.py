@@ -153,3 +153,70 @@ async def test_tool_documents_end_date():
 
     tools = {t.name: t for t in await mcp.list_tools()}
     assert "end_date" in tools["update_campaign"].parameters["properties"]
+
+
+TODAY = datetime.now(UTC).date().isoformat()
+
+
+def _current_start(monkeypatch, start_date_time, found=True):
+    queries: list[str] = []
+
+    def execute_query(_config, _cid, query):
+        queries.append(query)
+        return [{"campaign.start_date_time": start_date_time}] if found else []
+
+    monkeypatch.setattr("adloop.ads.gaql.execute_query", execute_query)
+    return queries
+
+
+class TestStartDate:
+    def test_brings_the_start_forward_to_today(self, config, monkeypatch):
+        queries = _current_start(monkeypatch, f"{FUTURE} 00:00:00")
+
+        result = _update(config, start_date=TODAY)
+
+        assert result["changes"]["start_date"] == TODAY
+        assert result["changes"]["current_start_date"] == FUTURE
+        assert "campaign.start_date_time" in queries[0]
+
+    def test_same_date_is_nothing_to_change(self, config, monkeypatch):
+        _current_start(monkeypatch, f"{TODAY} 00:00:00")
+
+        assert "nothing to change" in _update(config, start_date=TODAY)["error"]
+
+    @pytest.mark.parametrize("value", ["", "2030-13-01"])
+    def test_rejects_an_empty_or_invalid_date(self, config, monkeypatch, value):
+        _current_start(monkeypatch, "")
+
+        assert any("YYYY-MM-DD" in d for d in _update(config, start_date=value)["details"])
+
+    def test_rejects_past_and_after_the_end(self, config, monkeypatch):
+        _current_start(monkeypatch, "")
+
+        assert any("in the past" in d for d in _update(config, start_date=PAST)["details"])
+        later = (datetime.now(UTC).date() + timedelta(days=40)).isoformat()
+        details = _update(config, start_date=later, end_date=FUTURE)["details"]
+        assert any("is after end_date" in d for d in details)
+
+    def test_unknown_campaign(self, config, monkeypatch):
+        _current_start(monkeypatch, "", found=False)
+
+        assert "was not found" in _update(config, start_date=TODAY)["error"]
+
+    def test_apply_sets_start_of_day(self):
+        service = _FakeGoogleAdsService(
+            [_FakeMutateOperationResponse("campaign_result", "customers/1/campaigns/1")]
+        )
+        write._apply_update_campaign(_client(service), "1234567890", {
+            "campaign_id": CAMPAIGN, "current_start_date": FUTURE, "start_date": "2030-06-01",
+        })
+        operation = service.operations[0].campaign_operation
+
+        assert list(operation.update_mask.paths) == ["start_date_time"]
+        assert operation.update.start_date_time == "2030-06-01 00:00:00"
+
+
+def test_start_date_of_a_started_campaign_is_refused(config, monkeypatch):
+    _current_start(monkeypatch, f"{PAST} 10:00:00")
+
+    assert "already started" in _update(config, start_date=TODAY)["error"]

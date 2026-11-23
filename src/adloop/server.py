@@ -220,9 +220,12 @@ mcp = FastMCP(
 
 
 
+# "core": ADLOOP_TOOLSETS enables components by tag (only=True), and an
+# untagged resource would be switched off while tools still point at it.
 @mcp.resource(
     CARD_URI,
     name="approval_card",
+    tags={"core"},
     title="AdLoop approval card",
     description="Renders a change preview with Test run and Apply buttons.",
     mime_type=CARD_MIME_TYPE,
@@ -235,6 +238,7 @@ def approval_card() -> str:
 @mcp.resource(
     UPLOAD_CARD_URI,
     name="upload_card",
+    tags={"core"},
     title="AdLoop image upload",
     description="A drop zone that uploads images to AdLoop for use as ad assets.",
     mime_type=CARD_MIME_TYPE,
@@ -249,6 +253,7 @@ def upload_card() -> str:
 @mcp.resource(
     VIEW_URI,
     name="adloop_view",
+    tags={"core"},
     title="AdLoop view",
     description="Draws a read result as a dashboard (charts and tables).",
     mime_type=VIEW_MIME_TYPE,
@@ -4339,6 +4344,7 @@ def update_campaign(
     geo_exclude_ids: _StrListOpt = None,
     ad_schedule: _DictListOpt = None,
     end_date: str | None = None,
+    start_date: str | None = None,
 ) -> dict:
     """Draft an update to an existing campaign — returns a PREVIEW, does NOT apply.
 
@@ -4433,6 +4439,10 @@ def update_campaign(
             end of that day in the account time zone); must not be in the past.
             Omitted leaves it unchanged; "" removes it, so the campaign runs
             indefinitely. The preview shows the current one (current_end_date).
+        start_date: First day the campaign runs, YYYY-MM-DD in the account
+            time zone: today or later, e.g. to bring a scheduled start forward
+            to today. Omitted leaves it unchanged; it cannot be removed, and
+            Google refuses a change once the campaign has started serving.
     """
     from adloop.ads.write import update_campaign as _impl
 
@@ -4459,6 +4469,7 @@ def update_campaign(
         geo_exclude_ids=geo_exclude_ids,
         ad_schedule=ad_schedule,
         end_date=end_date,
+        start_date=start_date,
     )
 
 

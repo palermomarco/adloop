@@ -2395,6 +2395,7 @@ def update_campaign(
     geo_exclude_ids: list[str] | None = None,
     ad_schedule: list[dict] | None = None,
     end_date: str | None = None,
+    start_date: str | None = None,
 ) -> dict:
     """Draft an update to an existing campaign — returns preview, does NOT execute.
 
@@ -2408,6 +2409,8 @@ def update_campaign(
     geo_exclude_ids and ad_schedule REPLACE the campaign's exclusions and
     windows: None leaves them unchanged, [] clears them. The preview shows the
     current values, and apply refuses if those changed after the preview.
+    start_date (YYYY-MM-DD, the first day the campaign runs, today or later):
+    None leaves it unchanged. Google refuses it once the campaign has started.
     end_date (YYYY-MM-DD, the last day the campaign runs): None leaves it
     unchanged, "" removes it so the campaign runs indefinitely.
     """
@@ -2499,6 +2502,18 @@ def update_campaign(
             errors.append(f"end_date '{end_date}' must be a date YYYY-MM-DD")
         elif end_date and end_date < datetime.now(UTC).date().isoformat():
             errors.append(f"end_date {end_date} is in the past")
+    if start_date is not None:
+        from datetime import UTC, datetime
+
+        from adloop.ads.assets import _iso_date
+
+        start_date = str(start_date).strip()
+        if not _iso_date(start_date):
+            errors.append(f"start_date '{start_date}' must be a date YYYY-MM-DD (it cannot be removed)")
+        elif start_date < datetime.now(UTC).date().isoformat():
+            errors.append(f"start_date {start_date} is in the past")
+        elif end_date and start_date > end_date:
+            errors.append(f"start_date {start_date} is after end_date {end_date}")
     if max_cpc:
         strategy_for_cap = bs or _campaign_bidding_strategy(config, customer_id, campaign_id)
         if strategy_for_cap is None:
@@ -2529,6 +2544,7 @@ def update_campaign(
         geo_exclude_ids is not None,
         ad_schedule is not None,
         end_date is not None,
+        start_date is not None,
     ])
     if not has_any_change:
         errors.append("No changes specified — provide at least one parameter to update")
@@ -2602,9 +2618,28 @@ def update_campaign(
             }
             url_example = _example_click_urls(current_urls["final_url"], effective)
 
+    current_start_date = None
+    if start_date is not None:
+        current_start_date = _current_campaign_date(config, customer_id, campaign_id, "start_date_time")
+        if current_start_date is None:
+            return {"error": f"Campaign {campaign_id} was not found in this account"}
+        if start_date == current_start_date:
+            start_date = None  # already so: nothing to change for this field
+        elif current_start_date and current_start_date <= datetime.now(UTC).date().isoformat():
+            # Google: CANNOT_MODIFY_START_DATE_IF_ALREADY_STARTED.
+            return {
+                "error": f"Campaign {campaign_id} already started on {current_start_date}; Google does "
+                "not allow changing the start date of a campaign that has started."
+            }
+        else:
+            warnings.append(
+                f"The campaign can serve from {start_date} (start of that day in the account "
+                "time zone) once it is enabled."
+            )
+
     current_end_date = None
     if end_date is not None:
-        current_end_date = _current_end_date(config, customer_id, campaign_id)
+        current_end_date = _current_campaign_date(config, customer_id, campaign_id, "end_date_time")
         if current_end_date is None:
             return {"error": f"Campaign {campaign_id} was not found in this account"}
         if end_date == current_end_date:
@@ -2754,6 +2789,9 @@ def update_campaign(
     if end_date is not None:
         changes["current_end_date"] = current_end_date
         changes["end_date"] = end_date
+    if start_date is not None:
+        changes["current_start_date"] = current_start_date
+        changes["start_date"] = start_date
 
     if keyword_match_type:
         changes["current_keyword_match_type"] = current_match["keyword_match_type"]
@@ -4212,17 +4250,17 @@ def _current_location_options(
     }
 
 
-def _current_end_date(config: AdLoopConfig, customer_id: str, campaign_id: str) -> str | None:
-    """The campaign's last day (YYYY-MM-DD, "" when it runs indefinitely); None
-    when it does not exist."""
+def _current_campaign_date(config: AdLoopConfig, customer_id: str, campaign_id: str, field: str) -> str | None:
+    """The campaign's start_date_time or end_date_time as YYYY-MM-DD ("" when
+    unset); None when the campaign does not exist."""
     from adloop.ads.gaql import execute_query
 
     rows = execute_query(config, customer_id, (
-        f"SELECT campaign.end_date_time FROM campaign WHERE campaign.id = {campaign_id}"))
+        f"SELECT campaign.{field} FROM campaign WHERE campaign.id = {campaign_id}"))
     if not rows:
         return None
     # API v23+ returns "yyyy-MM-dd HH:mm:ss" in the account time zone.
-    return str(rows[0].get("campaign.end_date_time") or "")[:10]
+    return str(rows[0].get(f"campaign.{field}") or "")[:10]
 
 
 # Campaign URL options. Validation is deliberately light: the template must
@@ -5436,8 +5474,10 @@ def _apply_update_campaign(client: object, cid: str, changes: dict) -> dict:
     url_fields = [field for field in _URL_OPTION_FIELDS if field in changes]
     keyword_match_type = changes.get("keyword_match_type")
     end_date = changes.get("end_date")
+    start_date = changes.get("start_date")
     if (
         end_date is not None
+        or start_date
         or bs
         or search_partners_enabled is not None
         or display_network_enabled is not None
@@ -5522,6 +5562,9 @@ def _apply_update_campaign(client: object, cid: str, changes: dict) -> dict:
             if end_date:
                 campaign.end_date_time = f"{end_date} 23:59:59"
             field_paths.append("end_date_time")
+        if start_date:
+            campaign.start_date_time = f"{start_date} 00:00:00"
+            field_paths.append("start_date_time")
 
         if field_paths:
             campaign_op.campaign_operation.update_mask.CopyFrom(
