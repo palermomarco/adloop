@@ -371,6 +371,18 @@ def draft_audience(
                     "Google only allows at creation; it cannot take an audience. Create the audience without "
                     "ad_group_id, or use a new ad group created with that setting."
                 )
+            elif execute_query(
+                config,
+                customer_id,
+                "SELECT ad_group_criterion.criterion_id FROM ad_group_criterion WHERE ad_group_criterion.type = "
+                f"'AUDIENCE' AND ad_group_criterion.status != 'REMOVED' AND ad_group.id = {ad_group_id}",
+            ):
+                # Google: ONE_AUDIENCE_ALLOWED_PER_AD_GROUP.
+                errors.append(
+                    f"ad group '{ad_group['name']}' already has an audience and takes only one. Remove it first "
+                    "(get_audience_targeting gives the remove_id for remove_entity), or create the audience "
+                    "without ad_group_id."
+                )
     if errors:
         return {"error": "Validation failed", "details": errors}
 

@@ -36,8 +36,10 @@ _LISTS = [
 _CUSTOM = [{"custom_audience.id": 21, "custom_audience.name": "Competitor searchers", "custom_audience.type": "SEARCH"}]
 
 
-def _gaql(channel="DEMAND_GEN", grouped=True, ad_groups=True):
+def _gaql(channel="DEMAND_GEN", grouped=True, ad_groups=True, has_audience=False):
     def fake(config, customer_id, query):
+        if "FROM ad_group_criterion" in query:
+            return [{"ad_group_criterion.criterion_id": 3}] if has_audience else []
         if "FROM user_list" in query:
             return _LISTS
         if "FROM custom_audience" in query:
@@ -162,6 +164,9 @@ class TestAudienceDraft:
             ungrouped = audience_create.draft_audience(_config(tmp_path), **kwargs)
         with _gaql(ad_groups=False):
             missing = audience_create.draft_audience(_config(tmp_path), **kwargs)
+        with _gaql(has_audience=True):
+            taken = audience_create.draft_audience(_config(tmp_path), **kwargs)
+        assert "already has an audience" in _details(taken)
         assert "only to Demand Gen ad groups" in _details(display)
         assert "use_audience_grouped" in _details(ungrouped)
         assert "was not found" in _details(missing)

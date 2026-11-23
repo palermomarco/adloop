@@ -113,7 +113,7 @@ class TestCampaignMutate:
     def test_operations_follow_googles_flow(self):
         client, ops = self._ops()
         assert [op._pb.WhichOneof("operation") for op in ops] == [
-            "campaign_budget_operation", "campaign_operation", "ad_group_operation", "ad_group_operation",
+            "campaign_budget_operation", "campaign_operation", "ad_group_operation",
             "ad_group_criterion_operation", "ad_group_criterion_operation", "ad_group_criterion_operation",
         ]
         assert ops[0].campaign_budget_operation.create.explicitly_shared is False
@@ -131,15 +131,11 @@ class TestCampaignMutate:
         # Demand Gen ad groups are created without a type.
         assert ad_group.type_ == client.enums.AdGroupTypeEnum.UNSPECIFIED
         assert ad_group.audience_setting.use_audience_grouped is True
-        # Optimized targeting is switched off explicitly, under a mask.
-        off = ops[3].ad_group_operation
-        assert off.update.resource_name == ad_group.resource_name and not off.update.optimized_targeting_enabled
-        assert list(off.update_mask.paths) == ["optimized_targeting_enabled"]
         selected = ad_group.demand_gen_ad_group_settings.channel_controls.selected_channels
         assert (selected.discover, selected.gmail, selected.display, selected.youtube_shorts) == (True, True, False, False)
 
         # Location and language live on the ad group, not the campaign.
-        criteria = [op.ad_group_criterion_operation.create for op in ops[4:]]
+        criteria = [op.ad_group_criterion_operation.create for op in ops[3:]]
         assert all(c.ad_group == ad_group.resource_name for c in criteria)
         assert criteria[0].location.geo_target_constant == "geoTargetConstants/2380"
         assert [c.language.language_constant for c in criteria[1:]] == ["languageConstants/1004", "languageConstants/1000"]
@@ -153,7 +149,31 @@ class TestCampaignMutate:
 
         _, ops = self._ops(optimized_targeting=True)
         assert ops[2].ad_group_operation.create.optimized_targeting_enabled is True
-        assert ops[3]._pb.WhichOneof("operation") == "ad_group_criterion_operation"
+
+    def test_optimized_targeting_is_switched_off_after_the_create(self):
+        changes = {
+            "campaign_name": "DG IT", "daily_budget": 20, "bidding_strategy": "TARGET_SPEND", "ad_group_name": "G",
+            "geo_target_ids": ["2380"], "language_ids": ["1004"], "channels": "ALL_CHANNELS",
+        }
+        client = _FakeClient()
+        calls = []
+
+        def mutate(customer_id, mutate_operations):
+            calls.append(list(mutate_operations))
+            names = ["customers/1/campaignBudgets/7", "customers/1/campaigns/8", "customers/1/adGroups/9"]
+            if len(calls) == 2:
+                raise RuntimeError("boom")
+            return SimpleNamespace(mutate_operation_responses=names)
+
+        client._service.mutate = mutate
+        with patch("adloop.ads.write._extract_resource_name", side_effect=lambda r: r):
+            result = demand_gen.apply_create_demand_gen_campaign(client, "1", changes)
+        off = calls[1][0].ad_group_operation
+        assert off.update.resource_name == "customers/1/adGroups/9" and not off.update.optimized_targeting_enabled
+        assert list(off.update_mask.paths) == ["optimized_targeting_enabled"]
+        # The campaign exists, so the failed follow-up is reported, not raised.
+        assert result["campaign"] == "customers/1/campaigns/8"
+        assert "NOT VERIFIED OFF" in result["optimized_targeting"]
 
         _, ops = self._ops(bidding_strategy="MAXIMIZE_CONVERSIONS")
         assert ops[1].campaign_operation.create._pb.HasField("maximize_conversions")

@@ -213,15 +213,6 @@ def build_demand_gen_campaign_operations(client: object, cid: str, changes: dict
             setattr(selected, channel, channel in channels)
     operations.append(op)
 
-    if not changes.get("optimized_targeting"):
-        # The field has no presence, so False is not sent on create and Google
-        # applies its own default. An update with a mask states it.
-        op = client.get_type("MutateOperation")
-        op.ad_group_operation.update.resource_name = ad_group_path
-        op.ad_group_operation.update.optimized_targeting_enabled = False
-        op.ad_group_operation.update_mask.paths.append("optimized_targeting_enabled")
-        operations.append(op)
-
     for geo_id in changes["geo_target_ids"]:
         op = client.get_type("MutateOperation")
         criterion = op.ad_group_criterion_operation.create
@@ -247,10 +238,11 @@ def apply_create_demand_gen_campaign(client: object, cid: str, changes: dict) ->
     )
     names = [_extract_resource_name(r) for r in response.mutate_operation_responses]
     names += [None] * (3 - len(names))
-    return {
+    result = {
         "campaign_budget": names[0],
         "campaign": names[1],
         "ad_group": names[2],
+        "optimized_targeting": bool(changes.get("optimized_targeting")),
         "status": "PAUSED",
         "next_steps": (
             "Attach an audience with draft_audience(ad_group_id=...), upload images with "
@@ -258,6 +250,20 @@ def apply_create_demand_gen_campaign(client: object, cid: str, changes: dict) ->
             "campaign with enable_entity(entity_type='campaign')."
         ),
     }
+    if not changes.get("optimized_targeting") and names[2]:
+        # The field has no presence, so False cannot be sent on create, and
+        # Google refuses an update of a temporary id in the same request. The
+        # campaign already exists (PAUSED), so a failure here is reported,
+        # not raised: raising would invite a second, duplicate apply.
+        op = client.get_type("MutateOperation")
+        op.ad_group_operation.update.resource_name = names[2]
+        op.ad_group_operation.update.optimized_targeting_enabled = False
+        op.ad_group_operation.update_mask.paths.append("optimized_targeting_enabled")
+        try:
+            service.mutate(customer_id=cid, mutate_operations=[op])
+        except Exception as e:  # noqa: BLE001
+            result["optimized_targeting"] = f"NOT VERIFIED OFF, check it in Google Ads before enabling: {e}"
+    return result
 
 
 # ---------------------------------------------------------------------------
